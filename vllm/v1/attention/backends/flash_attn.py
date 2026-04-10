@@ -723,6 +723,11 @@ class FlashAttentionImpl(AttentionImpl):
 
         num_actual_tokens = attn_metadata.num_actual_tokens
 
+        # Zero padding positions so stale data from a prior graph replay
+        # cannot feed back through the residual stream.
+        if num_actual_tokens < output.shape[0]:
+            output[num_actual_tokens:].zero_()
+
         # Handle encoder attention differently - no KV cache needed
         if attn_type in (AttentionType.ENCODER_ONLY, AttentionType.ENCODER):
             # For encoder attention,

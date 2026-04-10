@@ -1,0 +1,4 @@
+Qwen3.5-35B-A3B-BF16-DEP-eager.yaml
+Qwen3.5-35B-A3B-BF16-DEP.yaml
+Qwen3.5-35B-A3B-BF16-DP-eager.yaml
+Qwen3.5-35B-A3B-BF16-DP.yaml

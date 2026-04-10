@@ -544,6 +544,36 @@ class TritonAttentionImpl(AttentionImpl):
 
         num_actual_tokens = attn_metadata.num_actual_tokens
 
+        if num_actual_tokens < output.shape[0]:
+            is_layer_0 = '.layers.0.' in getattr(layer, 'layer_name', '')
+            if is_layer_0:
+                padding = output[num_actual_tokens:]
+                has_nan = padding.isnan().any().item()
+                has_inf = padding.isinf().any().item()
+                if has_nan or has_inf:
+                    first_nan_idx: int | None = None
+                    first_inf_idx: int | None = None
+                    if has_nan:
+                        flat_nan = torch.isnan(padding).flatten()
+                        first_nan_idx = int(
+                            torch.where(flat_nan)[0][0].item())
+                    if has_inf:
+                        flat_inf = torch.isinf(padding).flatten()
+                        first_inf_idx = int(
+                            torch.where(flat_inf)[0][0].item())
+                    logger.warning(
+                        "ATTN_PAD [triton] padded=%d actual=%d pad_rows=%d "
+                        "nan=%s first_nan_flat_idx=%s inf=%s first_inf_flat_idx=%s",
+                        output.shape[0],
+                        num_actual_tokens,
+                        output.shape[0] - num_actual_tokens,
+                        has_nan,
+                        first_nan_idx,
+                        has_inf,
+                        first_inf_idx,
+                    )
+            # output[num_actual_tokens:].zero_()
+
         # Handle encoder attention differently - no KV cache needed
         if self.attn_type in (AttentionType.ENCODER_ONLY, AttentionType.ENCODER):
             # For encoder attention,

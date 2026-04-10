@@ -1,0 +1,4 @@
+Qwen3-30B-A3B-Fp8-DEP-eager.yaml
+Qwen3-30B-A3B-Fp8-DEP.yaml
+Qwen3-30B-A3B-Fp8-DP-eager.yaml
+Qwen3-30B-A3B-Fp8-DP.yaml

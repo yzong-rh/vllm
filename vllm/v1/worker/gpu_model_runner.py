@@ -3280,6 +3280,12 @@ class GPUModelRunner(
             positions = self.positions[:num_input_tokens]
             if num_input_tokens > num_scheduled_tokens:
                 self.positions[num_scheduled_tokens:num_input_tokens].zero_()
+                # # Zero padding input_ids so the MoE gate sees deterministic
+                # # inputs instead of stale data from a previous batch.
+                # logger.warning(
+                #     f"Zeroing out DP padding input_ids: {num_scheduled_tokens} to {num_input_tokens}"
+                # )
+                # self.input_ids.gpu[num_scheduled_tokens:num_input_tokens].zero_()
 
         if is_first_rank:
             intermediate_tensors = None
@@ -3763,6 +3769,20 @@ class GPUModelRunner(
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: IntermediateTensors | None = None,
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors | None:
+        # # Get batch descriptor and sync across DP ranks.
+        # num_reqs = len(scheduler_output.num_scheduled_tokens)
+        # num_toks = scheduler_output.total_num_scheduled_tokens
+        # max_query_len = max(scheduler_output.num_scheduled_tokens.values())
+
+        # # --- debug: log step num_reqs, num_toks, max_query_len, padded ---
+        # logger.warning(
+        #     "DP: step num_reqs=%d num_toks=%d max_query_len=%d",
+        #     num_reqs,
+        #     num_toks,
+        #     max_query_len,
+        # )
+        # # --- end debug ---
+
         if self.execute_model_state is not None:
             raise RuntimeError(
                 "State error: sample_tokens() must be called "

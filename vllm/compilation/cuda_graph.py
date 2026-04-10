@@ -352,5 +352,46 @@ class CUDAGraphWrapper:
         # Sync offloader before replay - ensures any external dependencies
         # from pre-capture prefetches are satisfied.
         get_offloader().sync_prev_onload()
+
+        # # --- debug: sync after every piecewise replay ---
+        # submod = getattr(self.runnable, "submod_name", "?")
+        # idx = getattr(self.runnable, "piecewise_compile_index", "?")
+        # try:
+        #     torch.accelerator.synchronize()
+        # except RuntimeError as e:
+        #     logger.error(
+        #         "CUDA error BEFORE replaying submod=%s "
+        #         "(piecewise_index=%s, batch=%s): %s",
+        #         submod,
+        #         idx,
+        #         entry.batch_descriptor,
+        #         e,
+        #     )
+        #     raise
+        # # --- end debug ---
+
         entry.cudagraph.replay()
+
+        # # --- debug: sync after every piecewise replay ---
+        # try:
+        #     torch.accelerator.synchronize()
+        # except RuntimeError as e:
+        #     logger.error(
+        #         "CUDA error AFTER replaying submod=%s "
+        #         "(piecewise_index=%s, batch=%s): %s",
+        #         submod,
+        #         idx,
+        #         entry.batch_descriptor,
+        #         e,
+        #     )
+        #     raise
+        # if idx == 1:
+        #     logger.warning(
+        #         "Replayed submod=%s (piecewise_index=%s, batch=%s) OK",
+        #         submod,
+        #         idx,
+        #         entry.batch_descriptor,
+        #     )
+        # # --- end debug ---
+
         return entry.output
