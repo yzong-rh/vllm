@@ -23,17 +23,22 @@ A free port is automatically selected for each run, so multiple
 invocations can safely run in parallel.  ``--extra-vllm-args`` carries
 any additional ``vllm serve`` flags (TP size, tool-call parser, …).
 
+Greedy decoding (temperature=0) is forced for reproducibility.  The vLLM
+server-side seed defaults to 0. For full determinism, set ``VLLM_BATCH_INVARIANT=1``.
+
 Examples::
 
-    .venv/bin/python bfcl-eval.py \\
+    # Single mode with batch invariance:
+    VLLM_BATCH_INVARIANT=1 .venv/bin/python bfcl-eval.py \\
         --model meta-llama/Llama-3.1-8B-Instruct \\
         --mode chat_completions \\
         --extra-vllm-args "--enable-auto-tool-choice \\
-            --tool-call-parser llama3_json --tensor-parallel-size 1 \\
-            --max-model-len 32768 --enforce-eager --no-enable-prefix-caching"
+            --tool-call-parser llama3_json \\
+            --tensor-parallel-size 1 \\
+            --max-model-len 32768"
 
     # All three modes (each in a subprocess with its own result dir):
-    .venv/bin/python bfcl-eval.py \\
+    VLLM_BATCH_INVARIANT=1 .venv/bin/python bfcl-eval.py \\
         --model meta-llama/Llama-3.1-8B-Instruct --run-all \\
         --extra-vllm-args "..."
 
@@ -45,6 +50,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -142,6 +148,10 @@ def _run_mode(args: argparse.Namespace, mode: str) -> int:
         os.environ["LOCAL_SERVER_ENDPOINT"] = "127.0.0.1"
 
     # -- 2. Import bfcl (reads BFCL_PROJECT_ROOT once at import time) -------
+    # Suppress chatty client-side HTTP loggers before importing bfcl/openai.
+    for _name in ("httpx", "openai", "httpcore"):
+        logging.getLogger(_name).setLevel(logging.WARNING)
+
     import bfcl_eval.constants.model_config as bfcl_mc
     from bfcl_eval.__main__ import evaluate, generate
     from bfcl_eval.constants.model_config import MODEL_CONFIG_MAPPING, ModelConfig
@@ -202,6 +212,7 @@ def _run_mode(args: argparse.Namespace, mode: str) -> int:
                 "model_key": model_key,
                 "mode": mode,
                 "test_category": args.test_category,
+                "temperature": 0.0,
                 "num_threads": args.num_threads,
                 "port": port,
                 "extra_vllm_args": args.extra_vllm_args,
@@ -215,7 +226,14 @@ def _run_mode(args: argparse.Namespace, mode: str) -> int:
     # -- 5. Start server, generate, evaluate, cleanup -----------------------
     server = None
     try:
-        cmd = ["vllm", "serve", args.model, "--port", str(port)] + extra_tokens
+        cmd = [
+            "vllm",
+            "serve",
+            args.model,
+            "--port",
+            str(port),
+            "--disable-uvicorn-access-log",
+        ] + extra_tokens
         print(f"Starting vLLM: {' '.join(cmd)}")
         server = subprocess.Popen(cmd)
         print(f"Waiting for vLLM on port {port} (timeout 600s)...")
@@ -231,6 +249,8 @@ def _run_mode(args: argparse.Namespace, mode: str) -> int:
         gkw["test_category"] = categories
         gkw["num_threads"] = args.num_threads
         gkw["skip_server_setup"] = True
+        gkw["temperature"] = 0.0
+        gkw["allow_overwrite"] = True
         if not is_api:
             gkw["backend"] = "vllm"
         generate(**gkw)
