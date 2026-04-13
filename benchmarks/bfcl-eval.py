@@ -16,6 +16,8 @@ manages the server (``skip_server_setup=True`` in all modes).
                      (client.completions.create) with model-specific prompt
                      formatting and decoding (OSSHandler).
 
+  all                Runs every mode above sequentially in one invocation.
+
 Each mode stores results under ``<results-dir>/<mode>/`` with separate
 ``result/`` and ``score/`` trees so scores are directly comparable.
 
@@ -28,19 +30,66 @@ server-side seed defaults to 0. For full determinism, set ``VLLM_BATCH_INVARIANT
 
 Examples::
 
-    # Single mode with batch invariance:
-    VLLM_BATCH_INVARIANT=1 .venv/bin/python bfcl-eval.py \\
+    # Quick sanity check with a small single-turn category:
+    VLLM_BATCH_INVARIANT=1 python bfcl-eval.py \\
         --model meta-llama/Llama-3.1-8B-Instruct \\
         --mode chat_completions \\
+        --test-category simple_python \\
         --extra-vllm-args "--enable-auto-tool-choice \\
             --tool-call-parser llama3_json \\
-            --tensor-parallel-size 1 \\
+            --chat-template examples/tool_chat_template_llama3.1_json.jinja \\
+            --max-model-len 4096"
+
+    # Run all modes sequentially (chat_completions, responses, completions_oss)
+    # with a single command.  The server is started fresh for each mode.
+    # --enable-auto-tool-choice / --tool-call-parser are harmless for
+    # completions_oss (the OSS handler uses the text completions API).
+
+    # --- openai/gpt-oss-120b  (TP=4, DP=2) -------------------------
+    python bfcl-eval.py \\
+        --model openai/gpt-oss-120b \\
+        --mode all \\
+        --extra-vllm-args "--enable-auto-tool-choice \\
+            --tool-call-parser openai \\
+            --tensor-parallel-size 4 --data-parallel-size 2 \\
             --max-model-len 32768"
 
-    # All three modes (each in a subprocess with its own result dir):
-    VLLM_BATCH_INVARIANT=1 .venv/bin/python bfcl-eval.py \\
-        --model meta-llama/Llama-3.1-8B-Instruct --run-all \\
-        --extra-vllm-args "..."
+    # --- nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4  (TP=2, DP=4)
+    python bfcl-eval.py \\
+        --model nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \\
+        --mode all \\
+        --extra-vllm-args "--enable-auto-tool-choice \\
+            --tool-call-parser hermes \\
+            --tensor-parallel-size 2 --data-parallel-size 4 \\
+            --max-model-len 32768"
+
+    # --- mistralai/Mistral-Small-4-119B-2603  (TP=4, DP=2) ---------
+    python bfcl-eval.py \\
+        --model mistralai/Mistral-Small-4-119B-2603 \\
+        --mode all \\
+        --extra-vllm-args "--enable-auto-tool-choice \\
+            --tool-call-parser mistral \\
+            --tensor-parallel-size 4 --data-parallel-size 2 \\
+            --max-model-len 32768"
+
+    # --- Qwen/Qwen3-235B-A22B-GPTQ-Int4  (TP=4, DP=2) -------------
+    python bfcl-eval.py \\
+        --model Qwen/Qwen3-235B-A22B-GPTQ-Int4 \\
+        --mode all \\
+        --extra-vllm-args "--enable-auto-tool-choice \\
+            --tool-call-parser hermes \\
+            --tensor-parallel-size 4 --data-parallel-size 2 \\
+            --max-model-len 32768"
+
+    # --- meta-llama/Llama-3.3-70B-Instruct  (TP=2, DP=4) -----------
+    python bfcl-eval.py \\
+        --model meta-llama/Llama-3.3-70B-Instruct \\
+        --mode all \\
+        --extra-vllm-args "--enable-auto-tool-choice \\
+            --tool-call-parser llama3_json \\
+            --chat-template examples/tool_chat_template_llama3.1_json.jinja \\
+            --tensor-parallel-size 2 --data-parallel-size 4 \\
+            --max-model-len 32768"
 
 Requirements: ``bfcl-eval>=2025.10.20.1`` and vLLM (from this repo's .venv).
 """
@@ -51,6 +100,7 @@ import argparse
 import inspect
 import json
 import logging
+import multiprocessing
 import os
 import shlex
 import shutil
@@ -121,13 +171,13 @@ def _bfcl_func_defaults(func):
 # ---------------------------------------------------------------------------
 
 
-def _run_mode(args: argparse.Namespace, mode: str) -> int:
-    """Run one BFCL generate + evaluate pass in *mode*.
+def _run_mode(args: argparse.Namespace) -> int:
+    """Run one BFCL generate + evaluate pass for ``args.mode``.
 
     Starts a ``vllm serve`` process, runs BFCL with ``skip_server_setup=True``
     (so BFCL never manages the server), then tears the server down.
     """
-
+    mode = args.mode
     is_api = mode in ("chat_completions", "responses")
     categories = [c.strip() for c in args.test_category.split(",")]
     port = _find_free_port()
@@ -287,6 +337,38 @@ def _run_mode(args: argparse.Namespace, mode: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subprocess wrapper
+# ---------------------------------------------------------------------------
+
+_spawn_ctx = multiprocessing.get_context("spawn")
+
+
+def _run_mode_worker(args_dict: dict) -> None:
+    """Entry point for the spawned child process.
+
+    Reconstructs the argument namespace, runs the mode, and converts the
+    return code into a process exit code.
+    """
+    sys.exit(_run_mode(argparse.Namespace(**args_dict)))
+
+
+def _run_mode_in_subprocess(args: argparse.Namespace) -> int:
+    """Run ``_run_mode`` in an isolated ``spawn`` process.
+
+    The ``spawn`` context starts a fresh Python interpreter, so
+    ``bfcl_eval`` is imported from scratch every time and picks up
+    environment variables like ``BFCL_PROJECT_ROOT`` correctly.
+    """
+    proc = _spawn_ctx.Process(
+        target=_run_mode_worker,
+        args=(vars(args),),
+    )
+    proc.start()
+    proc.join()
+    return proc.exitcode
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -298,12 +380,11 @@ def main() -> int:
     )
     parser.add_argument("--model", required=True, help="HuggingFace model id")
 
-    mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument("--mode", choices=MODES, help="Single evaluation mode")
-    mode_group.add_argument(
-        "--run-all",
-        action="store_true",
-        help="Run all three modes sequentially (separate result dirs)",
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=(*MODES, "all"),
+        help="Evaluation mode ('all' runs every mode sequentially)",
     )
 
     parser.add_argument(
@@ -330,34 +411,18 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # --run-all: one subprocess per mode so BFCL_PROJECT_ROOT is fresh.
-    if args.run_all:
-        worst_rc = 0
-        for mode in MODES:
-            print(f"\n{'=' * 60}\n  Running mode: {mode}\n{'=' * 60}\n")
-            cmd = [
-                sys.executable,
-                os.path.abspath(__file__),
-                "--model",
-                args.model,
-                "--mode",
-                mode,
-                "--results-dir",
-                args.results_dir,
-                "--test-category",
-                args.test_category,
-                "--num-threads",
-                str(args.num_threads),
-            ]
-            if args.extra_vllm_args:
-                cmd += ["--extra-vllm-args", args.extra_vllm_args]
-            rc = subprocess.call(cmd)
-            if rc != 0:
-                print(f"Mode {mode} exited with code {rc}", file=sys.stderr)
-                worst_rc = rc
-        return worst_rc
+    if args.mode != "all":
+        return _run_mode_in_subprocess(args)
 
-    return _run_mode(args, args.mode)
+    worst = 0
+    for mode in MODES:
+        print(f"\n{'=' * 60}\n  Running mode: {mode}\n{'=' * 60}\n")
+        args.mode = mode
+        rc = _run_mode_in_subprocess(args)
+        if rc:
+            print(f"WARNING: mode '{mode}' exited with code {rc}", file=sys.stderr)
+        worst = max(worst, rc)
+    return worst
 
 
 if __name__ == "__main__":
