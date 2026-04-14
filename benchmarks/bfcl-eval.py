@@ -61,7 +61,7 @@ Examples::
         --extra-vllm-args "--enable-auto-tool-choice \\
             --tool-call-parser hermes \\
             --tensor-parallel-size 2 --data-parallel-size 4 \\
-            --max-model-len 32768"
+            --max-model-len 32768" --trust-remote-code
 
     # --- mistralai/Mistral-Small-4-119B-2603  (TP=4, DP=2) ---------
     python bfcl-eval.py \\
@@ -234,25 +234,11 @@ def _run_mode(args: argparse.Namespace) -> int:
     else:  # completions_oss
         model_key = args.model
         if model_key not in MODEL_CONFIG_MAPPING:
-            from bfcl_eval.model_handler.local_inference.quick_testing_oss import (
-                QuickTestingOSSHandler,
-            )
-
-            model_key = f"{args.model}-oss-eval"
-            bfcl_mc.MODEL_CONFIG_MAPPING[model_key] = ModelConfig(
-                model_name=args.model,
-                display_name=f"{args.model} (OSS completions)",
-                url=f"https://huggingface.co/{args.model}",
-                org="",
-                license="apache-2.0",
-                model_handler=QuickTestingOSSHandler,
-            )
             print(
-                f"NOTE: '{args.model}' not in BFCL model registry; registered "
-                f"as '{model_key}' with QuickTestingOSSHandler (generic "
-                f"chat-template).  For accurate FC scores, use an official "
-                f"BFCL model key."
+                f"SKIP completions_oss: '{args.model}' is not in the BFCL model "
+                f"registry. Use an official BFCL model key for OSS completions."
             )
+            return 0
 
     # -- 4. Save run metadata -----------------------------------------------
     (Path(project_root) / "run_config.json").write_text(
