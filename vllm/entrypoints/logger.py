@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
 import logging
+import os
 from collections.abc import Sequence
 
 import torch
@@ -10,8 +12,11 @@ from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import BeamSearchParams, SamplingParams
+from vllm.tokenizers import TokenizerLike
 
 logger = init_logger(__name__)
+
+TRACE_FILE = "/tmp/vllm-traces/trace.jsonl"
 
 
 class RequestLogger:
@@ -40,7 +45,24 @@ class RequestLogger:
         prompt_embeds: torch.Tensor | None,
         params: SamplingParams | PoolingParams | BeamSearchParams | None,
         lora_request: LoRARequest | None,
+        tokenizer: TokenizerLike | None = None,
     ) -> None:
+        if tokenizer is not None and prompt_token_ids is not None:
+            decoded = tokenizer.decode(prompt_token_ids)
+            os.makedirs(os.path.dirname(TRACE_FILE), exist_ok=True)
+            with open(TRACE_FILE, "a") as f:
+                json.dump(
+                    {
+                        "type": "input",
+                        "request_id": request_id,
+                        "prompt_token_ids": prompt_token_ids,
+                        "decoded_prompt": decoded,
+                        "num_tokens": len(prompt_token_ids),
+                    },
+                    f,
+                )
+                f.write("\n")
+
         if logger.isEnabledFor(logging.DEBUG):
             max_log_len = self.max_log_len
             if max_log_len is not None:
@@ -75,7 +97,26 @@ class RequestLogger:
         finish_reason: str | None = None,
         is_streaming: bool = False,
         delta: bool = False,
+        tokenizer: TokenizerLike | None = None,
     ) -> None:
+        if tokenizer is not None and output_token_ids is not None:
+            token_list = list(output_token_ids)
+            decoded = tokenizer.decode(token_list)
+            os.makedirs(os.path.dirname(TRACE_FILE), exist_ok=True)
+            with open(TRACE_FILE, "a") as f:
+                json.dump(
+                    {
+                        "type": "output",
+                        "request_id": request_id,
+                        "output_token_ids": token_list,
+                        "decoded_output": decoded,
+                        "num_tokens": len(token_list),
+                        "finish_reason": finish_reason,
+                    },
+                    f,
+                )
+                f.write("\n")
+
         max_log_len = self.max_log_len
         if max_log_len is not None:
             if outputs is not None:

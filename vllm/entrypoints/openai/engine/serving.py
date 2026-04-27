@@ -573,6 +573,7 @@ class OpenAIServing:
             components.embeds,
             params=params,
             lora_request=lora_request,
+            tokenizer=self.renderer.get_tokenizer(),
         )
 
     async def _get_trace_headers(

@@ -1,0 +1,8 @@
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful math tutor. Show your work step by step."},
+    {"role": "user", "content": "What is 2+2?"},
+    {"role": "assistant", "content": "2 + 2 = 4"},
+    {"role": "user", "content": "Now multiply that by 3."}
+  ]
+}

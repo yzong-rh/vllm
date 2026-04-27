@@ -538,6 +538,7 @@ class HarmonyContext(ConversationContext):
         self.num_cached_tokens = 0
         self.num_reasoning_tokens = 0
         self.num_tool_output_tokens = 0
+        self._accumulated_token_ids: list[int] = []
 
         # Turn tracking - replaces multiple individual tracking variables
         self.current_turn_metrics = TurnMetrics()
@@ -558,6 +559,7 @@ class HarmonyContext(ConversationContext):
 
     def append_output(self, output: RequestOutput) -> None:
         output_token_ids = output.outputs[0].token_ids
+        self._accumulated_token_ids.extend(output_token_ids)
         self.parser = get_streamable_parser_for_assistant()
         for token_id in output_token_ids:
             self.parser.process(token_id)
@@ -878,6 +880,7 @@ class StreamingHarmonyContext(HarmonyContext):
         if last_delta_text:
             self.last_content_delta = last_delta_text
         self._update_decode_token_usage(output)
+        self._accumulated_token_ids.extend(output.outputs[0].token_ids)
         if output.kv_transfer_params is not None:
             self.kv_transfer_params = output.kv_transfer_params
 

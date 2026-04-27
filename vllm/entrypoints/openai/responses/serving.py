@@ -772,7 +772,9 @@ class OpenAIServingResponses(OpenAIServing):
         output_messages: ResponseInputOutputMessage | None = None
         if self.use_harmony:
             assert isinstance(context, HarmonyContext)
-            output = self._make_response_output_items_with_harmony(context)
+            output = self._make_response_output_items_with_harmony(
+                context, request, tokenizer
+            )
             if request.enable_response_messages:
                 input_messages = context.messages[: context.num_init_messages]
                 output_messages = context.messages[context.num_init_messages :]
@@ -997,6 +999,7 @@ class OpenAIServingResponses(OpenAIServing):
                 finish_reason=final_output.finish_reason,
                 is_streaming=False,
                 delta=False,
+                tokenizer=tokenizer,
             )
 
         # Compute logprobs if requested
@@ -1044,7 +1047,19 @@ class OpenAIServingResponses(OpenAIServing):
     def _make_response_output_items_with_harmony(
         self,
         context: HarmonyContext,
+        request: ResponsesRequest,
+        tokenizer: TokenizerLike,
     ) -> list[ResponseOutputItem]:
+        if self.enable_log_outputs and self.request_logger:
+            self.request_logger.log_outputs(
+                request_id=request.request_id,
+                outputs=tokenizer.decode(context._accumulated_token_ids),
+                output_token_ids=context._accumulated_token_ids,
+                finish_reason=context.finish_reason,
+                is_streaming=False,
+                delta=False,
+                tokenizer=tokenizer,
+            )
         output_items: list[ResponseOutputItem] = []
         num_init_messages = context.num_init_messages
         for msg in context.messages[num_init_messages:]:

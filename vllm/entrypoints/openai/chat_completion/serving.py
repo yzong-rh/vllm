@@ -470,6 +470,7 @@ class OpenAIServingChat(OpenAIServing):
 
         # Always track previous_texts for comprehensive output logging
         previous_texts = [""] * num_choices
+        accumulated_token_ids: list[list[int]] = [[] for _ in range(num_choices)]
 
         # Only one of these will be used, thus previous_texts and
         # all_previous_token_ids will not be used twice in the same iteration.
@@ -889,6 +890,8 @@ class OpenAIServingChat(OpenAIServing):
                         assert previous_texts is not None
                         previous_texts[i] += delta_text
 
+                    accumulated_token_ids[i] += as_list(output.token_ids)
+
                     # set the previous values for the next iteration
                     previous_num_tokens[i] += len(output.token_ids)
 
@@ -1130,10 +1133,11 @@ class OpenAIServingChat(OpenAIServing):
                     self.request_logger.log_outputs(
                         request_id=request_id,
                         outputs=full_text,
-                        output_token_ids=None,  # Consider also logging all token IDs
+                        output_token_ids=accumulated_token_ids[i],
                         finish_reason="streaming_complete",
                         is_streaming=True,
                         delta=False,
+                        tokenizer=tokenizer,
                     )
 
         except GenerationError as e:
@@ -1527,7 +1531,6 @@ class OpenAIServingChat(OpenAIServing):
                 if choice.message.content:
                     output_text = choice.message.content
                 elif choice.message.tool_calls:
-                    # For tool calls, log the function name and arguments
                     tool_call_descriptions = []
                     for tc in choice.message.tool_calls:  # type: ignore
                         function_call: FunctionCall = tc.function  # type: ignore
@@ -1537,20 +1540,19 @@ class OpenAIServingChat(OpenAIServing):
                     tool_calls_str = ", ".join(tool_call_descriptions)
                     output_text = f"[tool_calls: {tool_calls_str}]"
 
-                if output_text:
-                    # Get the corresponding output token IDs
-                    output_token_ids = None
-                    if choice.index < len(final_res.outputs):
-                        output_token_ids = final_res.outputs[choice.index].token_ids
+                output_token_ids = None
+                if choice.index < len(final_res.outputs):
+                    output_token_ids = final_res.outputs[choice.index].token_ids
 
-                    self.request_logger.log_outputs(
-                        request_id=request_id,
-                        outputs=output_text,
-                        output_token_ids=output_token_ids,
-                        finish_reason=choice.finish_reason,
-                        is_streaming=False,
-                        delta=False,
-                    )
+                self.request_logger.log_outputs(
+                    request_id=request_id,
+                    outputs=output_text,
+                    output_token_ids=output_token_ids,
+                    finish_reason=choice.finish_reason,
+                    is_streaming=False,
+                    delta=False,
+                    tokenizer=tokenizer,
+                )
 
         return response
 
