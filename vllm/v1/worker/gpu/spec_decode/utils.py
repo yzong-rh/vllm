@@ -51,20 +51,26 @@ class DraftTokensHandler:
         self.copy_stream = torch.cuda.Stream(device)
         # Blocking (sleep) event to avoid busy-polling the CUDA driver lock.
         self.copy_event = torch.cuda.Event(blocking=True)
+        self._copy_pending = False
 
-        self.req_ids: list[str] = []
-        self.draft_tokens_np: np.ndarray | None = None
-        self.num_draft_tokens: int = 0
+        # Under PP a request is rescheduled pp_size steps after it was
+        # sampled and other microbatches can run before the grammar fetch.
+        # Keep the latest state directly per request instead of retaining
+        # whole batches.
+        # An int represents the draft width for an unstructured request.
+        self._draft_tokens_by_req: dict[str, np.ndarray | list[int] | int] = {}
 
     def set_draft_tokens(
         self, input_batch: InputBatch, draft_tokens: torch.Tensor
     ) -> None:
-        self.req_ids = input_batch.req_ids
-        self.num_draft_tokens = draft_tokens.shape[1]
         if not input_batch.has_structured_output_reqs:
             # No draft token validation needs to be performed by
-            # the scheduler for this batch.
-            self.draft_tokens_np = None
+            # the scheduler for this batch. Synchronous scheduling still
+            # needs the request IDs and width to preserve the speculative
+            # slots, so store placeholders directly per request.
+            num_draft_tokens = draft_tokens.shape[1]
+            for req_id in input_batch.req_ids:
+                self._draft_tokens_by_req[req_id] = num_draft_tokens
             return
 
         # For spec decoding + structured outputs, we must transfer the
@@ -72,21 +78,52 @@ class DraftTokensHandler:
         current_stream = torch.cuda.current_stream(self.device)
         self.copy_stream.wait_stream(current_stream)
         with torch.cuda.stream(self.copy_stream):
-            self.draft_tokens_np = async_copy_to_np(draft_tokens)
+            draft_tokens_np = async_copy_to_np(draft_tokens)
             # draft_tokens is a temporary allocation on the main stream and read here on
             # copy_stream; without record_stream, the caching allocator may reuse its
             # memory before the async copy executes.
             draft_tokens.record_stream(self.copy_stream)
             self.copy_event.record()
+            self._copy_pending = True
+
+        for req_id, row in zip(input_batch.req_ids, draft_tokens_np):
+            # Keep a view rather than copying the row. The view retains the
+            # asynchronously populated NumPy backing buffer.
+            self._draft_tokens_by_req[req_id] = row
+
+    def discard(self, req_id: str) -> None:
+        """Forget a request's drafts (finished, preempted, or re-added).
+
+        This is also called for every NEW request (add_requests removes any
+        prior state first), before the request has produced drafts.
+        """
+        self._draft_tokens_by_req.pop(req_id, None)
 
     def get_draft_tokens(self) -> DraftTokenIds | None:
-        if self.draft_tokens_np is not None:
+        # The latest event record fences all copies queued on copy_stream.
+        if self._copy_pending:
             self.copy_event.synchronize()
-            draft_token_ids = self.draft_tokens_np.tolist()
-        else:
-            # This case only happens when async scheduling is disabled.
-            draft_token_ids = [[-1] * self.num_draft_tokens for _ in self.req_ids]
-        return DraftTokenIds(self.req_ids, draft_token_ids)
+            self._copy_pending = False
+
+        req_ids: list[str] = []
+        draft_token_ids: list[list[int]] = []
+        for req_id, draft_tokens in self._draft_tokens_by_req.items():
+            req_ids.append(req_id)
+            if isinstance(draft_tokens, int):
+                # No CPU copy is needed for unstructured output. These
+                # placeholders preserve the speculative width for the
+                # synchronous scheduler.
+                draft_token_ids.append([-1] * draft_tokens)
+                continue
+
+            if isinstance(draft_tokens, np.ndarray):
+                draft_tokens = draft_tokens.tolist()
+                self._draft_tokens_by_req[req_id] = draft_tokens
+            assert isinstance(draft_tokens, list)
+            # Return a fresh list because scheduler validation may mutate it.
+            draft_token_ids.append(list(draft_tokens))
+
+        return DraftTokenIds(req_ids, draft_token_ids)
 
 
 def get_parallel_drafting_token_id(hf_config) -> int:
