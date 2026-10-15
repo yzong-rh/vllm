@@ -46,19 +46,24 @@ def get_pp_safe_draft_load_config(load_config: LoadConfig) -> LoadConfig:
 
 
 class DraftTokensHandler:
-    def __init__(self, device: torch.device | None = None):
+    def __init__(self, max_num_reqs: int, device: torch.device | None = None):
+        self.max_num_reqs = max_num_reqs
         self.device = device
         self.copy_stream = torch.cuda.Stream(device)
         # Blocking (sleep) event to avoid busy-polling the CUDA driver lock.
         self.copy_event = torch.cuda.Event(blocking=True)
         self._copy_pending = False
 
-        # Under PP a request is rescheduled pp_size steps after it was
-        # sampled and other microbatches can run before the grammar fetch.
-        # Keep the latest state directly per request instead of retaining
-        # whole batches.
+        # Requests may be absent from subsequent batches, so retain the latest
+        # state per request until it is consumed.
+        # NumPy views and PyTorch's pinned allocator keep async copies safe.
         # An int represents the draft width for an unstructured request.
         self._draft_tokens_by_req: dict[str, np.ndarray | list[int] | int] = {}
+
+    def _assert_request_bound(self) -> None:
+        assert len(self._draft_tokens_by_req) <= self.max_num_reqs, (
+            "retained draft-token requests exceed max_num_reqs"
+        )
 
     def set_draft_tokens(
         self, input_batch: InputBatch, draft_tokens: torch.Tensor
@@ -71,6 +76,7 @@ class DraftTokensHandler:
             num_draft_tokens = draft_tokens.shape[1]
             for req_id in input_batch.req_ids:
                 self._draft_tokens_by_req[req_id] = num_draft_tokens
+            self._assert_request_bound()
             return
 
         # For spec decoding + structured outputs, we must transfer the
@@ -79,9 +85,9 @@ class DraftTokensHandler:
         self.copy_stream.wait_stream(current_stream)
         with torch.cuda.stream(self.copy_stream):
             draft_tokens_np = async_copy_to_np(draft_tokens)
-            # draft_tokens is a temporary allocation on the main stream and read here on
-            # copy_stream; without record_stream, the caching allocator may reuse its
-            # memory before the async copy executes.
+            # draft_tokens is a temporary allocation on the main stream and read here
+            # on copy_stream; without record_stream, the caching allocator may reuse
+            # its memory before the async copy executes.
             draft_tokens.record_stream(self.copy_stream)
             self.copy_event.record()
             self._copy_pending = True
@@ -90,6 +96,7 @@ class DraftTokensHandler:
             # Keep a view rather than copying the row. The view retains the
             # asynchronously populated NumPy backing buffer.
             self._draft_tokens_by_req[req_id] = row
+        self._assert_request_bound()
 
     def discard(self, req_id: str) -> None:
         """Forget a request's drafts (finished, preempted, or re-added).
