@@ -1869,7 +1869,10 @@ class ModelConfig:
             A dictionary containing the non-default generation config.
 
         """
-        if self.generation_config in {"auto", "vllm"}:
+        src = self.generation_config
+        if src == "vllm":
+            config_dict: dict[str, Any] = {}
+        elif src == "auto":
             config = try_get_generation_config(
                 self.hf_config_path or self.model,
                 trust_remote_code=self.trust_remote_code,
@@ -1878,19 +1881,20 @@ class ModelConfig:
                 config_format=self.config_format,
                 hf_token=self.hf_token,
             )
+            config_dict = config.to_diff_dict() if config else {}
         else:
             config = try_get_generation_config(
-                self.generation_config,
+                src,
                 trust_remote_code=self.trust_remote_code,
                 code_revision=self.code_revision,
                 config_format=self.config_format,
                 hf_token=self.hf_token,
             )
+            config_dict = config.to_diff_dict() if config else {}
 
-        if config is None:
-            return {}
-
-        return config.to_diff_dict()
+        # Overriding with given generation config
+        config_dict.update(self.override_generation_config)
+        return config_dict
 
     def get_diff_sampling_param(self) -> dict[str, Any]:
         """This method returns a dictionary containing the non-default sampling
@@ -1909,11 +1913,7 @@ class ModelConfig:
         """
         src = self.generation_config
 
-        config = {} if src == "vllm" else self.try_get_generation_config()
-
-        # Overriding with given generation config
-        config.update(self.override_generation_config)
-
+        config = self.try_get_generation_config()
         available_params = [
             "repetition_penalty",
             "presence_penalty",

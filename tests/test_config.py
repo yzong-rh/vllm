@@ -2565,29 +2565,35 @@ def test_uses_mrope(model_id, uses_mrope):
     assert config.uses_mrope == uses_mrope
 
 
-def test_generation_config_loading():
+def test_generation_config_loading_and_sampling_defaults():
     model_id = "Qwen/Qwen2.5-1.5B-Instruct"
 
-    # When set generation_config to "vllm", the default generation config
-    # will not be loaded.
+    # When set generation_config to "vllm", model sampling defaults are not
+    # loaded.
     model_config = ModelConfig(model_id, generation_config="vllm")
     assert model_config.get_diff_sampling_param() == {}
 
-    # When set generation_config to "auto", the default generation config
-    # should be loaded.
+    # When set generation_config to "auto", model sampling defaults should be
+    # loaded from generation_config.json.
     model_config = ModelConfig(model_id, generation_config="auto")
 
-    correct_generation_config = {
+    expected_sampling_params = {
         "repetition_penalty": 1.1,
         "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
     }
 
-    assert model_config.get_diff_sampling_param() == correct_generation_config
+    assert model_config.get_diff_sampling_param() == expected_sampling_params
 
-    # The generation config could be overridden by the user.
-    override_generation_config = {"temperature": 0.5, "top_k": 5}
+    # The generation config can be overridden by the user, including
+    # non-sampling fields consumed by the input processor and model runners.
+    sampling_overrides = {"temperature": 0.5, "top_k": 5}
+    override_generation_config = {
+        **sampling_overrides,
+        "eos_token_id": [1, 2],
+        "suppress_tokens": [3, 4],
+    }
 
     model_config = ModelConfig(
         model_id,
@@ -2595,20 +2601,27 @@ def test_generation_config_loading():
         override_generation_config=override_generation_config,
     )
 
-    override_result = correct_generation_config.copy()
-    override_result.update(override_generation_config)
+    expected_sampling_params_with_overrides = expected_sampling_params.copy()
+    expected_sampling_params_with_overrides.update(sampling_overrides)
 
-    assert model_config.get_diff_sampling_param() == override_result
+    assert (
+        model_config.get_diff_sampling_param()
+        == expected_sampling_params_with_overrides
+    )
+    resolved_generation_config = model_config.try_get_generation_config()
+    assert resolved_generation_config["eos_token_id"] == [1, 2]
+    assert resolved_generation_config["suppress_tokens"] == [3, 4]
 
-    # When generation_config is set to "vllm" and override_generation_config
-    # is set, the override_generation_config should be used directly.
+    # When generation_config is set to "vllm", only explicit overrides should
+    # be used by both generation-config consumers and the sampling defaults.
     model_config = ModelConfig(
         model_id,
         generation_config="vllm",
         override_generation_config=override_generation_config,
     )
 
-    assert model_config.get_diff_sampling_param() == override_generation_config
+    assert model_config.get_diff_sampling_param() == sampling_overrides
+    assert model_config.try_get_generation_config() == override_generation_config
 
 
 @pytest.mark.parametrize(
